@@ -3,11 +3,11 @@ package flexid
 import (
 	"time"
 	"crypto/sha256"
-	"unsafe"
+	"encoding/binary"
 )
 
 /**
- * Generates 64-bit integer ids with a time component, sequence number component, and partition component.
+ * Generates 64-bit integer ids with a time component, sequence number component, and shard component, and constant component.
  *
  * This system of generating IDs requires no central authority to generate key values.
  *
@@ -18,77 +18,68 @@ import (
  * showing them to users by using HashIds (http://hashids.org/) or Knuth's Integer Hash.
  */
 type FlexId struct {
-	epoch         int64
-	sequenceBits  uint8
-	partitionBits uint8
-	sequenceMask  int16
-	partitionMask int16
+	epoch        int64
 
-	Sequence      int16
-	Partition     int16
+	sequenceBits uint8
+	sequenceMask int16
+	shardBits    uint8
+	shardMask    int16
+	constantBits uint8
+	constantMask int16
+
+	Sequence     int16
+	Constant     int16
 }
 
 /*
  * Creates a new FlexId Generator.
  */
-func NewFlexId(epoch int64, sequenceBits uint8, partitionBits uint8) *FlexId {
-	if sequenceBits > 15 { panic("sequenceBits must be < 16") }
-	if partitionBits > 15 { panic("partitionBits must by < 16") }
-
-	var i uint8;
-	var sequenceMask int16 = 0
-	for i = 0; i < sequenceBits; i++ {
-		sequenceMask = (sequenceMask << 1) | 1
+func NewFlexId(epoch int64, sequenceBits uint8, shardBits uint8, constantBits uint8) *FlexId {
+	if sequenceBits > 15 {
+		panic("sequenceBits must be < 16")
 	}
-	var partitionMask int16 = 0
-	for i = 0; i < partitionBits; i++ {
-		partitionMask = (partitionMask << 1) | 1
+	if shardBits > 15 {
+		panic("shardBits must be < 16")
+	}
+	if constantBits > 15 {
+		panic("constantBits must be < 16")
 	}
 
 	return &FlexId{
 		epoch: epoch,
 		sequenceBits: sequenceBits,
-		sequenceMask: sequenceMask,
-		partitionBits: partitionBits,
-		partitionMask: partitionMask,
+		sequenceMask: makeMask(sequenceBits),
+		shardBits: shardBits,
+		shardMask: makeMask(shardBits),
+		constantBits: constantBits,
+		constantMask: makeMask(constantBits),
 	}
 }
 
+func makeMask(bits uint8) int16 {
+	var mask int16 = 0
+	for i := 0; i < int(bits); i++ {
+		mask = (mask << 1) | 1
+	}
+	return mask
+}
+
 /*
- * Generates an ID with the supplied millis, supplied sequence, and supplied partition.
- * @param millis the number of milliseconds since epoch
+ * Generates an ID using the supplied shard key.
  */
-func (id *FlexId) Generate(args ...uint64) (result int64) {
+func (id *FlexId) Generate(shardKey string) (result int64) {
 	var millis int64
-	var sequence = id.Sequence
-	var partition = id.Partition
+	millis = time.Now().Unix() - id.epoch
+	sequence := id.Sequence
+	shard := Sum256(shardKey)
+	constant := id.Constant
 
-	switch len(args) {
-	case 0:
-		millis = time.Now().Unix() - id.epoch
-		sequence = id.Sequence
-		partition = id.Partition
-	case 1:
-		millis = int64(args[0]);
-		sequence = id.Sequence
-		partition = id.Partition
-	case 2:
-		millis = int64(args[0])
-		sequence = int16(args[1])
-		partition = id.Partition
-	default:
-		millis = int64(args[0])
-		sequence = int16(args[1])
-		partition = int16(args[2])
-	}
+	result = millis << (id.sequenceBits + id.shardBits + id.constantBits)
+	result |= int64(sequence & id.sequenceMask) << (id.shardBits + id.constantBits)
+	result |= int64(shard & id.shardMask) << (id.constantBits)
+	result |= int64(constant & id.constantMask)
 
-	if len(args) < 3 {
-		id.Sequence++
-	}
-
-	result =  millis << (id.sequenceBits + id.partitionBits)
-	result |= int64(sequence & id.sequenceMask) << id.partitionBits
-	result |= int64(partition & id.partitionMask)
+	id.Sequence++
 
 	return result
 }
@@ -98,7 +89,7 @@ func (id *FlexId) Generate(args ...uint64) (result int64) {
  * This is the raw value and is not adjusted for epoch.
  */
 func (id FlexId) ExtractMillis(v int64) int64 {
-	return v >> (id.sequenceBits + id.partitionBits)
+	return v >> (id.sequenceBits + id.shardBits + id.constantBits)
 }
 
 /*
@@ -113,33 +104,35 @@ func (id FlexId) ExtractTimestamp(v int64) time.Time {
  * Extracts the sequence component of an ID.
  */
 func (id FlexId) ExtractSequence(v int64) int16 {
-	return int16(v >> id.partitionBits) & id.sequenceMask
+	return int16(v >> (id.shardBits + id.constantBits)) & id.sequenceMask
 }
 
 /*
  * Extracts the partition component of an ID.
- * If bits is 0 < b < id.partitionBits then only that many bits of the partition is returned,
+ * If bits is 0 < bits < id.shardBits then only that many bits of the partition is returned,
  * which serves as simple method for mapping a large logical partition space onto a smaller physical partition space.
  */
-func (id FlexId) ExtractPartition(v int64, bits uint8) int16 {
-	mask := id.partitionMask;
-
-	if bits > 0 && bits < id.partitionBits {
-		mask = 0;
-		for i := uint8(0); i < bits; i++ {
-			mask = (mask << 1) | 1
-		}
+func (id FlexId) ExtractShard(v int64, bits uint8) int16 {
+	if (bits > 0 && bits < id.shardBits) {
+		return int16(v >> id.constantBits) & makeMask(bits);
+	} else {
+		return int16(v >> id.constantBits) & id.shardMask;
 	}
-
-	return int16(v) & mask
 }
 
 /*
- * A convenience method for computing a partition value from a string using an SHA-256 hash.
+ * Extracts the sequence component of an ID.
+ */
+func (id FlexId) ExtractConstant(v int64) int16 {
+	return int16(v) & id.constantMask
+}
+
+/*
+ * A convenience method for computing a shard value from a string using an SHA-256 hash.
  * This would typically be used to compute a shard ID from a string identifier such as a username.
  */
 func Sum256(text string) int16 {
 	sum := sha256.Sum256([]byte(text));
-	return *(*int16)(unsafe.Pointer(&sum[0]))
+	return int16(binary.BigEndian.Uint16(sum[18:]))
 }
 
