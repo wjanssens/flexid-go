@@ -78,8 +78,16 @@ func (id *FlexId) Generate(shardKey string) (result int64) {
  * Extracts the millis component of an ID.
  * This is the raw value and is not adjusted for epoch.
  */
-func (id FlexId) ExtractMillis(v int64) int64 {
+func (id FlexId) ExtractRawMillis(v int64) int64 {
 	return v >> (id.sequenceBits + id.shardBits)
+}
+
+/*
+ * Extracts the millis component of an ID.
+ * This is the raw value and is not adjusted for epoch.
+ */
+func (id FlexId) ExtractMillis(v int64) int64 {
+	return id.ExtractRawMillis(v) + id.epoch
 }
 
 /*
@@ -87,7 +95,7 @@ func (id FlexId) ExtractMillis(v int64) int64 {
  * This is the derived from the millis component of the ID with the configured epoch applied.
  */
 func (id FlexId) ExtractTimestamp(v int64) time.Time {
-	return time.Unix(id.ExtractMillis(v) + id.epoch, 0)
+	return time.Unix(id.ExtractMillis(v), 0)
 }
 
 /*
