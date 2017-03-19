@@ -7,7 +7,7 @@ import (
 )
 
 /**
- * Generates 64-bit integer ids with a time component, sequence number component, and shard component, and constant component.
+ * Generates 64-bit integer ids with a time component, sequence number component, and shard component.
  *
  * This system of generating IDs requires no central authority to generate key values.
  *
@@ -24,25 +24,19 @@ type FlexId struct {
 	sequenceMask int16
 	shardBits    uint8
 	shardMask    int16
-	constantBits uint8
-	constantMask int16
 
 	Sequence     int16
-	Constant     int16
 }
 
 /*
  * Creates a new FlexId Generator.
  */
-func NewFlexId(epoch int64, sequenceBits uint8, shardBits uint8, constantBits uint8) *FlexId {
+func NewFlexId(epoch int64, sequenceBits uint8, shardBits uint8) *FlexId {
 	if sequenceBits > 15 {
 		panic("sequenceBits must be < 16")
 	}
 	if shardBits > 15 {
 		panic("shardBits must be < 16")
-	}
-	if constantBits > 15 {
-		panic("constantBits must be < 16")
 	}
 
 	return &FlexId{
@@ -51,8 +45,6 @@ func NewFlexId(epoch int64, sequenceBits uint8, shardBits uint8, constantBits ui
 		sequenceMask: makeMask(sequenceBits),
 		shardBits: shardBits,
 		shardMask: makeMask(shardBits),
-		constantBits: constantBits,
-		constantMask: makeMask(constantBits),
 	}
 }
 
@@ -72,12 +64,10 @@ func (id *FlexId) Generate(shardKey string) (result int64) {
 	millis = time.Now().Unix() - id.epoch
 	sequence := id.Sequence
 	shard := Sum256(shardKey)
-	constant := id.Constant
 
-	result = millis << (id.sequenceBits + id.shardBits + id.constantBits)
-	result |= int64(sequence & id.sequenceMask) << (id.shardBits + id.constantBits)
-	result |= int64(shard & id.shardMask) << (id.constantBits)
-	result |= int64(constant & id.constantMask)
+	result = millis << (id.sequenceBits + id.shardBits)
+	result |= int64(sequence & id.sequenceMask) << (id.shardBits)
+	result |= int64(shard & id.shardMask)
 
 	id.Sequence++
 
@@ -89,7 +79,7 @@ func (id *FlexId) Generate(shardKey string) (result int64) {
  * This is the raw value and is not adjusted for epoch.
  */
 func (id FlexId) ExtractMillis(v int64) int64 {
-	return v >> (id.sequenceBits + id.shardBits + id.constantBits)
+	return v >> (id.sequenceBits + id.shardBits)
 }
 
 /*
@@ -104,7 +94,7 @@ func (id FlexId) ExtractTimestamp(v int64) time.Time {
  * Extracts the sequence component of an ID.
  */
 func (id FlexId) ExtractSequence(v int64) int16 {
-	return int16(v >> (id.shardBits + id.constantBits)) & id.sequenceMask
+	return int16(v >> id.shardBits) & id.sequenceMask
 }
 
 /*
@@ -114,17 +104,10 @@ func (id FlexId) ExtractSequence(v int64) int16 {
  */
 func (id FlexId) ExtractShard(v int64, bits uint8) int16 {
 	if (bits > 0 && bits < id.shardBits) {
-		return int16(v >> id.constantBits) & makeMask(bits);
+		return int16(v) & makeMask(bits);
 	} else {
-		return int16(v >> id.constantBits) & id.shardMask;
+		return int16(v) & id.shardMask;
 	}
-}
-
-/*
- * Extracts the sequence component of an ID.
- */
-func (id FlexId) ExtractConstant(v int64) int16 {
-	return int16(v) & id.constantMask
 }
 
 /*
